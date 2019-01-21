@@ -120,3 +120,8 @@ target_link_libraries(evaluate_collection_ordering
   mio
   ParallelSTL
   )
+
+add_executable(livendead livendead.cpp)
+target_link_libraries(
+  Boost::boost
+  )
