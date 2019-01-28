@@ -3,14 +3,14 @@
 
 #include "boost/algorithm/string/classification.hpp"
 #include "boost/algorithm/string/split.hpp"
-#include "spdlog/spdlog.h"
-
 #include "mio/mmap.hpp"
+#include "spdlog/spdlog.h"
 
 #include "succinct/mapper.hpp"
 
 #include "index_types.hpp"
 #include "query/queries.hpp"
+#include "timer.hpp"
 #include "util/util.hpp"
 #include "wand_data_compressed.hpp"
 #include "wand_data_raw.hpp"
@@ -30,12 +30,12 @@ void op_perftest(Functor query_func, // XXX!!!
 
     for (size_t run = 0; run <= runs; ++run) {
         for (auto const &query : queries) {
-            auto tick = get_time_usecs();
-            uint64_t result = query_func(query);
-            do_not_optimize_away(result);
-            double elapsed = double(get_time_usecs() - tick);
+            auto usecs = run_with_timer<std::chrono::microseconds>([&]() {
+                uint64_t result = query_func(query);
+                do_not_optimize_away(result);
+            });
             if (run != 0) { // first run is not timed
-                query_times.push_back(elapsed);
+                query_times.push_back(usecs.count());
             }
         }
     }
@@ -119,33 +119,25 @@ void perftest(const std::string &index_filename,
         spdlog::info("Query type: {}", t);
         std::function<uint64_t(term_id_vec)> query_fun;
         if (t == "and") {
-            query_fun = [&](term_id_vec query) { return and_query<false>()(index, query); };
+            query_fun = and_query<IndexType, false>(index);
         } else if (t == "and_freq") {
-            query_fun = [&](term_id_vec query) { return and_query<true>()(index, query); };
+            query_fun = and_query<IndexType, true>(index);
         } else if (t == "or") {
-            query_fun = [&](term_id_vec query) { return or_query<false>()(index, query); };
+            query_fun = or_query<IndexType, false>(index);
         } else if (t == "or_freq") {
-            query_fun = [&](term_id_vec query) { return or_query<true>()(index, query); };
+            query_fun = or_query<IndexType, true>(index);
         } else if (t == "wand" && wand_data_filename) {
-            query_fun = [&](term_id_vec query) {
-                return wand_query<WandType>(wdata, k)(index, query);
-            };
+            query_fun = wand_query<IndexType, WandType>(index, wdata, k);
         } else if (t == "block_max_wand" && wand_data_filename) {
-            query_fun = [&](term_id_vec query) {
-                return block_max_wand_query<WandType>(wdata, k)(index, query);
-            };
+            query_fun =block_max_wand_query<IndexType, WandType>(index, wdata, k);
         } else if (t == "block_max_maxscore" && wand_data_filename) {
-            query_fun = [&](term_id_vec query) {
-                return block_max_maxscore_query<WandType>(wdata, k)(index, query);
-            };
+            query_fun = block_max_maxscore_query<IndexType, WandType>(index, wdata, k);
         }  else if (t == "ranked_or" && wand_data_filename) {
-            query_fun = [&](term_id_vec query) {
-                return ranked_or_query<WandType>(wdata, k)(index, query);
-            };
+            query_fun = ranked_or_query<IndexType, WandType>(index, wdata, k);
         } else if (t == "maxscore" && wand_data_filename) {
-            query_fun = [&](term_id_vec query) {
-                return maxscore_query<WandType>(wdata, k)(index, query);
-            };
+            query_fun = maxscore_query<IndexType, WandType>(index, wdata, k);
+        } else if (t == "ranked_or_taat" && wand_data_filename) {
+            query_fun = pisa::make_ranked_or_taat_query<pisa::Simple_Accumulator>(index, wdata, k);
         } else {
             spdlog::error("Unsupported query type: {}", t);
             break;
