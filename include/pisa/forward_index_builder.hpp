@@ -9,20 +9,46 @@
 #include <string>
 #include <sstream>
 
-#include "boost/filesystem.hpp"
-#include "spdlog/spdlog.h"
-#include "spdlog/fmt/ostr.h"
-#include "tbb/concurrent_queue.h"
-#include "tbb/task_group.h"
+#include <boost/filesystem.hpp>
+#include <boost/te.hpp>
+#include <range/v3/view/iota.hpp>
+#include <spdlog/fmt/ostr.h>
+#include <spdlog/spdlog.h>
+#include <tbb/concurrent_queue.h>
+#include <tbb/task_group.h>
 
 #include "binary_collection.hpp"
-#include "enumerate.hpp"
 #include "parsing/html.hpp"
 #include "warcpp/warcpp.hpp"
 
 namespace pisa {
 
-using process_term_function_type    = std::function<std::string(std::string &&)>;
+struct Document_Record : boost::te::poly<Document_Record> {
+    using boost::te::poly<Document_Record>::poly;
+
+    [[nodiscard]] auto content() -> std::string & {
+        std::string * result = nullptr;
+        boost::te::call([](auto &self, auto &result) { result = &self.content(); }, *this, result);
+        return *result;
+    }
+    [[nodiscard]] auto trecid() const -> std::string const & {
+        std::string const *result = nullptr;
+        boost::te::call(
+            [](auto const &self, auto &result) { result = &self.trecid(); }, *this, result);
+        return *result;
+    }
+    [[nodiscard]] auto url() const -> std::string const & {
+        std::string const *result = nullptr;
+        boost::te::call(
+            [](auto const &self, auto &result) { result = &self.url(); }, *this, result);
+        return *result;
+    }
+    [[nodiscard]] auto valid() const -> bool {
+        return boost::te::call<bool>([](auto const &self) { return self.valid(); }, *this);
+    }
+};
+
+using process_term_function_type = std::function<std::string(std::string &&)>;
 using process_content_function_type =
     std::function<void(std::string &&, std::function<void(std::string &&)>)>;
 
@@ -86,10 +112,9 @@ void parse_html_content(std::string &&content, std::function<void(std::string &&
     }
 }
 
-template <typename Record>
 class Forward_Index_Builder {
    public:
-    using read_record_function_type = std::function<std::optional<Record>(std::istream &)>;
+    using read_record_function_type = std::function<std::optional<Document_Record>(std::istream &)>;
 
     template <typename Iterator>
     static std::ostream &write_document(std::ostream &os, Iterator first, Iterator last)
@@ -116,7 +141,7 @@ class Forward_Index_Builder {
 
     struct Batch_Process {
         std::ptrdiff_t               batch_number;
-        std::vector<Record>          records;
+        std::vector<Document_Record> records;
         Document_Id                  first_document;
         std::string const &          output_file;
     };
@@ -173,12 +198,12 @@ class Forward_Index_Builder {
         std::ofstream term_os(basename + ".terms");
 
         spdlog::info("Merging titles");
-        for (auto batch : enumerate(batch_count)) {
+        for (auto batch : ranges::view::iota(0, batch_count)) {
             std::ifstream title_is(batch_file(basename, batch) + ".documents");
             title_os << title_is.rdbuf();
         }
         spdlog::info("Merging URLs");
-        for (auto batch : enumerate(batch_count)) {
+        for (auto batch : ranges::view::iota(0, batch_count)) {
             std::ifstream url_is(batch_file(basename, batch) + ".urls");
             url_os << url_is.rdbuf();
         }
@@ -186,7 +211,7 @@ class Forward_Index_Builder {
         spdlog::info("Mapping terms");
         term_map_type term_map;
         std::vector<std::vector<std::ptrdiff_t>> id_mappings(batch_count);
-        for (auto batch : enumerate(batch_count)) {
+        for (auto batch : ranges::view::iota(0, batch_count)) {
             std::ifstream terms_is(batch_file(basename, batch) + ".terms");
             std::string term;
             std::ptrdiff_t batch_term_id = 0;
@@ -207,7 +232,7 @@ class Forward_Index_Builder {
         }
 
         spdlog::info("Remapping IDs");
-        for (auto batch : enumerate(batch_count)) {
+        for (auto batch : ranges::view::iota(0, batch_count)) {
             auto &mapping = id_mappings[batch];
             writable_binary_collection coll(batch_file(basename, batch).c_str());
             for (auto doc_iter = ++coll.begin(); doc_iter != coll.end(); ++doc_iter) {
@@ -220,7 +245,7 @@ class Forward_Index_Builder {
         spdlog::info("Concatenating batches");
         std::ofstream os(basename);
         write_header(os, document_count);
-        for (auto batch : enumerate(batch_count)) {
+        for (auto batch : ranges::view::iota(0, batch_count)) {
             std::ifstream is(batch_file(basename, batch));
             is.ignore(8);
             os << is.rdbuf();
@@ -240,12 +265,12 @@ class Forward_Index_Builder {
         Document_Id    first_document{0};
         std::ptrdiff_t batch_number = 0;
 
-        std::vector<Record> record_batch;
+        std::vector<Document_Record>       record_batch;
         tbb::task_group     batch_group;
         tbb::concurrent_bounded_queue<int> queue;
         queue.set_capacity((threads - 1) * 2);
         while (true) {
-            std::optional<Record> record = std::nullopt;
+            std::optional<Document_Record> record = std::nullopt;
             try {
                 if (not (record = next_record(is))) {
                     auto last_batch_size = record_batch.size();
@@ -281,7 +306,7 @@ class Forward_Index_Builder {
                     });
                 ++batch_number;
                 first_document += batch_size;
-                record_batch = std::vector<Record>();
+                record_batch = std::vector<Document_Record>();
             }
         }
         batch_group.wait();
@@ -293,7 +318,7 @@ class Forward_Index_Builder {
     {
         using boost::filesystem::path;
         using boost::filesystem::remove;
-        for (auto batch : enumerate(batch_count)) {
+        for (auto batch : ranges::view::iota(0, batch_count)) {
             auto batch_basename = batch_file(basename, batch);
             remove(path{batch_basename + ".documents"});
             remove(path{batch_basename + ".terms"});
